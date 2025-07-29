@@ -7,7 +7,7 @@ import os
 
 from twitter_scraper import TwitterScraper
 from database_manager import TickerDB
-from email_sender import send_notification_email  # <-- Import the new function
+from email_sender import send_notification_email
 
 SEEN_IDS_FILE = "seen_ids.txt"
 
@@ -47,38 +47,46 @@ async def main():
 
     print("\n--- Starting Tweet Listener & Ticker Processor ---")
 
+    # This outer try...finally ensures the cleanup task is always cancelled on exit
     try:
         async for tweet_batch in scraper.fetch_tweets(target_user_id='818071'):
-            newly_found_tickers_this_batch = set()
+            # This inner try...except handles errors for a SINGLE batch
+            try:
+                newly_found_tickers_this_batch = set()
 
-            for tweet in tweet_batch:
-                if tweet.id in seen_ids:
-                    continue
+                for tweet in tweet_batch:
+                    if tweet.id in seen_ids:
+                        continue
 
-                unique_tickers_in_tweet = set(re.findall(r"\$[A-Z]{1,5}\b", tweet.text))
+                    unique_tickers_in_tweet = set(re.findall(r"\$[A-Z]{1,5}\b", tweet.text))
 
-                if unique_tickers_in_tweet:
-                    for ticker in unique_tickers_in_tweet:
-                        db_manager.upsert_ticker(ticker)
-                        newly_found_tickers_this_batch.add(ticker)
+                    if unique_tickers_in_tweet:
+                        for ticker in unique_tickers_in_tweet:
+                            db_manager.upsert_ticker(ticker)
+                            newly_found_tickers_this_batch.add(ticker)
 
-                seen_ids.add(tweet.id)
-                append_seen_id(SEEN_IDS_FILE, tweet.id)
+                    seen_ids.add(tweet.id)
+                    append_seen_id(SEEN_IDS_FILE, tweet.id)
 
-            # --- THIS IS THE NEW LOGIC ---
-            if newly_found_tickers_this_batch:
-                print(f"Processed batch. Found new unique tickers: {', '.join(newly_found_tickers_this_batch)}")
-                # Send the email in a non-blocking way
-                await asyncio.to_thread(
-                    send_notification_email, list(newly_found_tickers_this_batch)
-                )
-            else:
-                print("Processed batch. No new tweets found.")
+                if newly_found_tickers_this_batch:
+                    print(f"Processed batch. Found new unique tickers: {', '.join(newly_found_tickers_this_batch)}")
+                    await asyncio.to_thread(
+                        send_notification_email, list(newly_found_tickers_this_batch)
+                    )
+                else:
+                    print("Processed batch. No new tweets found.")
+
+            # --- IMPROVED ERROR HANDLING ---
+            except Exception as e:
+                # 1. Provides a detailed error message instead of a generic one.
+                # 2. Since it's inside the loop, the program will continue running.
+                print(f"\n❗️ An error occurred while processing a batch. The script will continue.")
+                print(f"   Error Type: {type(e).__name__}")
+                print(f"   Details: {e}\n")
             # ---------------------------
 
-    except Exception as e:
-        print(f"The main application encountered an error: {e}")
     finally:
+        print("\nShutting down background tasks...")
         cleanup_task.cancel()
 
 
